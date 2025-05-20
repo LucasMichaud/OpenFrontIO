@@ -1,6 +1,6 @@
 import { S3 } from "@aws-sdk/client-s3";
 import { getServerConfigFromServer } from "../core/configuration/ConfigLoader";
-import { GameID, GameRecord } from "../core/Schemas";
+import { GameID, GameRecord, GameRecordSchema } from "../core/Schemas";
 import { logger } from "./Logger";
 
 const config = getServerConfigFromServer();
@@ -22,18 +22,26 @@ const gameFolder = "games";
 const analyticsFolder = "analytics";
 
 export async function archive(gameRecord: GameRecord) {
+  gameRecord.gitCommit = config.gitCommit();
+
   try {
-    gameRecord.gitCommit = config.gitCommit();
     // Archive to R2
     await archiveAnalyticsToR2(gameRecord);
+  } catch (error) {
+    log.error(
+      `${gameRecord.id}: Error writing game analytics to R2: ${error}`,
+      {
+        message: error?.message || error,
+        stack: error?.stack,
+        name: error?.name,
+        ...(error && typeof error === "object" ? error : {}),
+      },
+    );
+  }
 
+  try {
     // Archive full game if there are turns
-    if (gameRecord.turns.length > 0) {
-      log.info(
-        `${gameRecord.id}: game has more than zero turns, attempting to write to full game to R2`,
-      );
-      await archiveFullGameToR2(gameRecord);
-    }
+    await archiveFullGameToR2(gameRecord);
   } catch (error) {
     log.error(`${gameRecord.id}: Final archive error: ${error}`, {
       message: error?.message || error,
@@ -65,35 +73,27 @@ async function archiveAnalyticsToR2(gameRecord: GameRecord) {
     })),
   };
 
-  try {
-    // Store analytics data using just the game ID as the key
-    const analyticsKey = `${gameRecord.id}.json`;
+  // Store analytics data using just the game ID as the key
+  const analyticsKey = `${gameRecord.id}.json`;
 
-    await r2.putObject({
-      Bucket: bucket,
-      Key: `${analyticsFolder}/${analyticsKey}`,
-      Body: JSON.stringify(analyticsData),
-      ContentType: "application/json",
-    });
+  await r2.putObject({
+    Bucket: bucket,
+    Key: `${analyticsFolder}/${analyticsKey}`,
+    Body: JSON.stringify(analyticsData),
+    ContentType: "application/json",
+  });
 
-    log.info(`${gameRecord.id}: successfully wrote game analytics to R2`);
-  } catch (error) {
-    log.error(
-      `${gameRecord.id}: Error writing game analytics to R2: ${error}`,
-      {
-        message: error?.message || error,
-        stack: error?.stack,
-        name: error?.name,
-        ...(error && typeof error === "object" ? error : {}),
-      },
-    );
-    throw error;
-  }
+  log.info(`${gameRecord.id}: successfully wrote game analytics to R2`);
 }
 
 async function archiveFullGameToR2(gameRecord: GameRecord) {
+  if (!gameRecord.turns.length) return;
+  log.info(
+    `${gameRecord.id}: game has more than zero turns, attempting to write to full game to R2`,
+  );
+
   // Create a deep copy to avoid modifying the original
-  const recordCopy = JSON.parse(JSON.stringify(gameRecord));
+  const recordCopy = structuredClone(gameRecord);
 
   // Players may see this so make sure to clear PII
   recordCopy.players.forEach((p) => {
@@ -101,17 +101,12 @@ async function archiveFullGameToR2(gameRecord: GameRecord) {
     p.persistentID = "REDACTED";
   });
 
-  try {
-    await r2.putObject({
-      Bucket: bucket,
-      Key: `${gameFolder}/${recordCopy.id}`,
-      Body: JSON.stringify(recordCopy),
-      ContentType: "application/json",
-    });
-  } catch (error) {
-    log.error(`error saving game ${gameRecord.id}`);
-    throw error;
-  }
+  await r2.putObject({
+    Bucket: bucket,
+    Key: `${gameFolder}/${recordCopy.id}`,
+    Body: JSON.stringify(recordCopy),
+    ContentType: "application/json",
+  });
 
   log.info(`${gameRecord.id}: game record successfully written to R2`);
 }
@@ -128,7 +123,7 @@ export async function readGameRecord(
     // Parse the response body
     if (response.Body === undefined) return null;
     const bodyContents = await response.Body.transformToString();
-    return JSON.parse(bodyContents) as GameRecord;
+    return GameRecordSchema.parse(JSON.parse(bodyContents));
   } catch (error) {
     // Log the error for monitoring purposes
     log.error(`${gameId}: Error reading game record from R2: ${error}`, {
