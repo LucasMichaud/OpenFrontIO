@@ -12,7 +12,7 @@ import {
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
 import { PseudoRandom } from "../PseudoRandom";
-import { FlatBinaryHeap } from "./utils/FlatBinaryHeap"; // adjust path if needed
+import { FlatBinaryHeap } from "./utils/FlatBinaryHeap"; 
 
 const malusForRetreat = 25;
 export class AttackExecution implements Execution {
@@ -30,6 +30,8 @@ export class AttackExecution implements Execution {
   private border = new Set<TileRef>();
 
   private attack: Attack | null = null;
+
+  private lastTroops: number = 0;
 
   constructor(
     private startTroops: number | null = null,
@@ -112,7 +114,7 @@ export class AttackExecution implements Execution {
       this.startTroops,
       this.sourceTile,
     );
-
+    this.lastTroops = this.attack.troops();
     for (const incoming of this._owner.incomingAttacks()) {
       if (incoming.attacker() === this.target) {
         // Target has opposing attack, cancel them out
@@ -186,6 +188,12 @@ export class AttackExecution implements Execution {
     if (this.attack === null) {
       throw new Error("Attack not initialized");
     }
+    const currentTroops = this.attack.troops();
+    const prevTroops    = this.lastTroops;
+    if (currentTroops > prevTroops) { 
+      this.refreshToConquer(); // refresh the toConquer list if troops are added
+    }
+    this.lastTroops = currentTroops;
     let troopCount = this.attack.troops(); // cache troop count
     const targetIsPlayer = this.target.isPlayer(); // cache target type
     const targetPlayer = targetIsPlayer ? (this.target as Player) : null; // cache target player
